@@ -1,22 +1,39 @@
+
 import pool from '../config/db.js'
 
-const escapeHtml = (text) =>
-    String(text || '')
+const escapeHtml = (value = '') =>
+    String(value)
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+
+const buildAbsoluteUrl = (base, value) => {
+    if (!value) return ''
+
+    try {
+        return new URL(value, `${base}/`).href
+    } catch {
+        return ''
+    }
+}
 
 export const getProductShare = async (req, res) => {
-
     const { id } = req.params
 
     try {
-
         const result = await pool.query(
-            `SELECT items.id, items.name, items.image_url, categories.name AS category
+            `SELECT
+                items.id,
+                items.name,
+                items.brand,
+                items.sub_category,
+                items.image_url,
+                categories.name AS category
              FROM items
-             LEFT JOIN categories ON categories.id = items.category_id
+             LEFT JOIN categories
+                ON categories.id = items.category_id
              WHERE items.id = $1`,
             [id]
         )
@@ -27,43 +44,95 @@ export const getProductShare = async (req, res) => {
             return res.status(404).send('Product not found.')
         }
 
-        const title = escapeHtml(item.name)
-        const description = escapeHtml(
-            item.category
-                ? `${item.category} · PD Furniture`
-                : 'PD Furniture'
+        const frontendBase = process.env.FRONTEND_URL
+        const assetBase = process.env.PUBLIC_ASSET_BASE_URL
+
+        if (!frontendBase || !assetBase) {
+            console.error('Missing frontend or asset base URL configuration')
+            return res.status(500).send(
+                'Sharing is temporarily unavailable.'
+            )
+        }
+
+        const productUrl = buildAbsoluteUrl(
+            frontendBase,
+            `/product/${item.id}`
         )
 
-        const imageUrl = item.image_url
-            ? `${process.env.PUBLIC_ASSET_BASE_URL || ''}${item.image_url}`
-            : ''
+        const shareUrl = buildAbsoluteUrl(
+            frontendBase,
+            `/share/product/${item.id}`
+        )
 
-        const frontendProductUrl = `${process.env.FRONTEND_URL || ''}/product/${item.id}`
+        const imageUrl = buildAbsoluteUrl(
+            assetBase,
+            item.image_url
+        )
+
+        const descriptionParts = [
+            item.brand,
+            item.category,
+            item.sub_category,
+            'PD Furniture'
+        ].filter(Boolean)
+
+        const title = escapeHtml(item.name)
+        const description = escapeHtml(descriptionParts.join(' · '))
+
+        const safeProductUrl = escapeHtml(productUrl)
+        const safeShareUrl = escapeHtml(shareUrl)
+        const safeImageUrl = escapeHtml(imageUrl)
 
         const html = `<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <meta charset="utf-8">
-    <title>${title}</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
 
+    <title>${title} | PD Furniture</title>
+
+    <meta name="description" content="${description}">
+
+    <!-- Open Graph -->
     <meta property="og:title" content="${title}">
     <meta property="og:description" content="${description}">
-    ${imageUrl ? `<meta property="og:image" content="${imageUrl}">` : ''}
     <meta property="og:type" content="product">
+    <meta property="og:site_name" content="PD Furniture">
+    <meta property="og:url" content="${safeShareUrl}">
 
-    <meta http-equiv="refresh" content="0; url=${frontendProductUrl}">
+    ${imageUrl ? `
+    <meta property="og:image" content="${safeImageUrl}">
+    <meta property="og:image:alt" content="${title}">
+    <meta property="og:image:type" content="image/webp">
+    ` : ''}
+
+    <!-- Twitter / X -->
+    <meta name="twitter:card" content="${imageUrl ? 'summary_large_image' : 'summary'}">
+    <meta name="twitter:title" content="${title}">
+    <meta name="twitter:description" content="${description}">
+
+    ${imageUrl ? `
+    <meta name="twitter:image" content="${safeImageUrl}">
+    ` : ''}
+
+    <!-- Product page redirect -->
+    <meta http-equiv="refresh" content="0;url=${safeProductUrl}">
+    <link rel="canonical" href="${safeProductUrl}">
 </head>
+
 <body>
-    <p>Redirecting to <a href="${frontendProductUrl}">${title}</a>...</p>
+    <p>
+        Redirecting to
+        <a href="${safeProductUrl}">${title}</a>...
+    </p>
 </body>
 </html>`
 
-        res.set('Content-Type', 'text/html')
-        res.send(html)
+        res.set('Cache-Control', 'public, max-age=300')
+        res.type('html').send(html)
 
     } catch (error) {
-
-        console.error(error)
+        console.error('Product share error:', error)
         res.status(500).send('Unable to load product.')
     }
 }
